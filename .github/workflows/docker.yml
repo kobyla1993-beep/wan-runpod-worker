@@ -4,36 +4,37 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug files
+      - name: Debug repository files
         run: |
+          echo "PWD:"
           pwd
+          echo "FILES:"
           ls -la
-          find . -type f
+          echo "DOCKERFILE CONTENT:"
+          cat Dockerfile
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ github.workspace }}
-          file: ${{ github.workspace }}/Dockerfile
-          push: true
-          tags: ghcr.io/kobyla1993-beep/wan-runpod-worker:latest
+      - name: Build Docker image
+        run: |
+          docker build -t ghcr.io/kobyla1993-beep/wan-runpod-worker:latest -f Dockerfile .
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/kobyla1993-beep/wan-runpod-worker:latest
