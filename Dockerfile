@@ -1,11 +1,14 @@
-FROM python:3.11-slim
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
 
-COPY requirements.txt .
+ENV PYTHONUNBUFFERED=1
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/requirements.txt
 
-COPY handler.py .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /app/requirements.txt
 
-CMD ["python", "-u", "handler.py"]
+COPY handler.py /app/handler.py
+
+CMD ["python", "-u", "/app/handler.py"]
