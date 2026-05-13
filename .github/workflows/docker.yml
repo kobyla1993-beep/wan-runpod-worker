@@ -24,8 +24,10 @@ jobs:
           pwd
           echo "FILES:"
           ls -la
-          echo "DOCKERFILE CONTENT:"
-          cat Dockerfile
+          echo "GIT COMMIT:"
+          git rev-parse --short HEAD
+          echo "HANDLER HEAD:"
+          head -40 handler.py
 
       - name: Login to GHCR
         run: |
@@ -33,8 +35,17 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ghcr.io/kobyla1993-beep/wan-runpod-worker:latest -f Dockerfile .
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          docker build \
+            -t ghcr.io/kobyla1993-beep/wan-runpod-worker:latest \
+            -t ghcr.io/kobyla1993-beep/wan-runpod-worker:${COMMIT_SHA} \
+            -f Dockerfile .
 
-      - name: Push Docker image
+      - name: Push Docker image latest
         run: |
           docker push ghcr.io/kobyla1993-beep/wan-runpod-worker:latest
+
+      - name: Push Docker image commit tag
+        run: |
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          docker push ghcr.io/kobyla1993-beep/wan-runpod-worker:${COMMIT_SHA}
