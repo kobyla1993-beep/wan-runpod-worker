@@ -1,1 +1,11 @@
 runpod==1.7.0
+diffusers
+transformers
+accelerate
+safetensors
+sentencepiece
+protobuf
+ftfy
+imageio
+imageio-ffmpeg
+huggingface_hub
