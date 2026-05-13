@@ -4,7 +4,10 @@ import time
 import uuid
 import traceback
 
-os.environ["DIFFUSERS_NO_ADDITIONAL_IMPORTS"] = "1"
+# vypnutí moderních attention dispatch píčovin
+os.environ["DIFFUSERS_USE_FLASH_ATTENTION"] = "0"
+os.environ["USE_FLASH_ATTENTION"] = "0"
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 import runpod
@@ -32,24 +35,25 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def load_pipeline():
+
     global pipe
 
     if pipe is not None:
         return pipe
 
-    print("=== LOADING WAN MODEL ===", flush=True)
+    print("=== LOADING WAN PIPELINE ===", flush=True)
 
     start = time.time()
 
     pipe = DiffusionPipeline.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.bfloat16
+        torch_dtype=torch.float16
     )
 
     pipe.to("cuda")
 
-    print("=== MODEL LOADED ===", flush=True)
-    print("Load time:", round(time.time() - start, 2), flush=True)
+    print("=== PIPELINE LOADED ===", flush=True)
+    print("LOAD TIME:", round(time.time() - start, 2), flush=True)
 
     return pipe
 
@@ -61,12 +65,6 @@ def handler(job):
         print("=== JOB RECEIVED ===", flush=True)
         print(job, flush=True)
 
-        if not torch.cuda.is_available():
-            return {
-                "ok": False,
-                "error": "CUDA unavailable"
-            }
-
         job_input = job.get("input", {})
 
         prompt = job_input.get("prompt")
@@ -74,12 +72,12 @@ def handler(job):
         if not prompt:
             return {
                 "ok": False,
-                "error": "Missing prompt"
+                "error": "missing prompt"
             }
 
         pipeline = load_pipeline()
 
-        print("=== GENERATING VIDEO ===", flush=True)
+        print("=== START GENERATION ===", flush=True)
 
         start = time.time()
 
@@ -92,11 +90,11 @@ def handler(job):
 
         frames = result.frames[0]
 
-        output_name = f"{uuid.uuid4().hex}.mp4"
+        filename = f"{uuid.uuid4().hex}.mp4"
 
         output_path = os.path.join(
             OUTPUT_DIR,
-            output_name
+            filename
         )
 
         export_to_video(
@@ -105,17 +103,15 @@ def handler(job):
             fps=8
         )
 
-        generation_time = round(
-            time.time() - start,
-            2
-        )
+        total = round(time.time() - start, 2)
 
-        print("=== VIDEO COMPLETE ===", flush=True)
+        print("=== VIDEO GENERATED ===", flush=True)
+        print(output_path, flush=True)
 
         return {
             "ok": True,
-            "video_path": output_path,
-            "generation_time": generation_time
+            "video": output_path,
+            "generation_time": total
         }
 
     except Exception as e:
