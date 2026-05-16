@@ -8,7 +8,9 @@ import traceback
 import torch
 import runpod
 import imageio
+import boto3
 
+from botocore.client import Config
 from diffusers import AutoencoderKLWan, WanPipeline
 
 
@@ -27,12 +29,37 @@ OUTPUT_DIR = "/tmp/wan_outputs"
 pipe = None
 
 
+def env(name, default=None, required=False):
+    """
+    Bezpečně načte environment proměnnou.
+
+    Environment proměnná = hodnota nastavená v RunPod endpointu.
+    Například R2_BUCKET_NAME nebo R2_SECRET_ACCESS_KEY.
+
+    required=True znamená:
+    když proměnná chybí, worker hodí chybu.
+    """
+    value = os.getenv(name, default)
+
+    if required and not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+
+    return value
+
+
 def load_model():
     """
-    Načte WAN model do paměti.
+    Načte WAN model.
 
-    Tohle se udělá jen jednou při prvním jobu.
-    Pak worker zůstane warm a další joby jsou rychlejší.
+    Děláme lazy loading:
+    model se nenačítá při startu containeru,
+    ale až při prvním jobu.
+
+    Výhoda:
+    worker rychleji naběhne.
+
+    Nevýhoda:
+    první request je pomalejší.
     """
     global pipe
 
@@ -65,32 +92,15 @@ def load_model():
     return pipe
 
 
-def video_to_base64(video_path):
-    """
-    Vezme MP4 soubor a převede ho na base64 string.
-
-    Proč:
-    RunPod serverless nemůže uživateli jen tak dát soubor z /tmp.
-    /tmp je uvnitř containeru.
-    Base64 umožní nacpat video přímo do JSON response.
-
-    Nevýhoda:
-    Base64 zvětší data asi o třetinu.
-    Pro velká videa je to prasárna.
-    Pro testy je to ale ideální.
-    """
-    with open(video_path, "rb") as f:
-        video_bytes = f.read()
-
-    return base64.b64encode(video_bytes).decode("utf-8")
-
-
 def save_video(frames, fps):
     """
-    Uloží vygenerované framy jako MP4.
+    Uloží framy do MP4 souboru.
 
-    frames = seznam obrázků
-    fps = počet snímků za sekundu
+    frames:
+    seznam obrázků, které WAN vygeneroval
+
+    fps:
+    kolik snímků za sekundu video má mít
     """
     filename = f"{uuid.uuid4().hex}.mp4"
     video_path = os.path.join(OUTPUT_DIR, filename)
@@ -108,15 +118,90 @@ def save_video(frames, fps):
     return video_path
 
 
+def video_to_base64(video_path):
+    """
+    Převede MP4 na base64.
+
+    Necháváme to tu jako debug možnost.
+    Normálně už budeme používat R2 upload.
+    """
+    with open(video_path, "rb") as f:
+        video_bytes = f.read()
+
+    return base64.b64encode(video_bytes).decode("utf-8")
+
+
+def get_r2_client():
+    """
+    Vytvoří klienta pro Cloudflare R2.
+
+    R2 používá S3-compatible API.
+    Proto endpoint vypadá takhle:
+
+    https://ACCOUNT_ID.r2.cloudflarestorage.com
+    """
+    account_id = env("R2_ACCOUNT_ID", required=True)
+    access_key_id = env("R2_ACCESS_KEY_ID", required=True)
+    secret_access_key = env("R2_SECRET_ACCESS_KEY", required=True)
+
+    endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+
+def upload_video_to_r2(video_path):
+    """
+    Nahraje MP4 do Cloudflare R2.
+
+    Výsledek:
+    vrací veřejnou URL, kterou může otevřít browser/frontend.
+
+    Bucket musí být buď public,
+    nebo musíš mít nastavenou custom public domain.
+    """
+    bucket_name = env("R2_BUCKET_NAME", required=True)
+    public_base_url = env("R2_PUBLIC_BASE_URL", required=True).rstrip("/")
+
+    filename = os.path.basename(video_path)
+    object_key = f"videos/{filename}"
+
+    print(f"=== UPLOADING TO R2: {object_key} ===", flush=True)
+
+    s3 = get_r2_client()
+
+    s3.upload_file(
+        video_path,
+        bucket_name,
+        object_key,
+        ExtraArgs={
+            "ContentType": "video/mp4",
+        },
+    )
+
+    video_url = f"{public_base_url}/{object_key}"
+
+    print(f"=== R2 UPLOAD COMPLETE: {video_url} ===", flush=True)
+
+    return video_url, object_key
+
+
 def handler(job):
     """
-    Hlavní funkce workeru.
+    Hlavní RunPod handler.
 
-    RunPod sem pošle job.
-    My z něj vytáhneme input.
-    Spustíme WAN.
-    Uložíme MP4.
-    Vrátíme JSON s base64 videem.
+    Přijme job:
+    - načte input
+    - vygeneruje video
+    - uloží MP4
+    - volitelně nahraje do R2
+    - volitelně vrátí base64
     """
     try:
         print("=== JOB RECEIVED ===", flush=True)
@@ -130,7 +215,8 @@ def handler(job):
         fps = int(job_input.get("fps", 8))
         guidance_scale = float(job_input.get("guidance_scale", 5.0))
 
-        return_base64 = bool(job_input.get("return_base64", True))
+        upload_to_r2 = bool(job_input.get("upload_to_r2", True))
+        return_base64 = bool(job_input.get("return_base64", False))
 
         print("=== SETTINGS ===", flush=True)
         print(f"Prompt: {prompt}", flush=True)
@@ -138,6 +224,7 @@ def handler(job):
         print(f"Steps: {steps}", flush=True)
         print(f"FPS: {fps}", flush=True)
         print(f"Guidance scale: {guidance_scale}", flush=True)
+        print(f"Upload to R2: {upload_to_r2}", flush=True)
         print(f"Return base64: {return_base64}", flush=True)
 
         pipeline = load_model()
@@ -158,9 +245,7 @@ def handler(job):
         print("=== VIDEO GENERATED ===", flush=True)
 
         frames = result.frames[0]
-
         video_path = save_video(frames, fps)
-
         file_size = os.path.getsize(video_path)
 
         output = {
@@ -175,8 +260,16 @@ def handler(job):
                 "steps": steps,
                 "fps": fps,
                 "guidance_scale": guidance_scale,
+                "upload_to_r2": upload_to_r2,
+                "return_base64": return_base64,
             },
         }
+
+        if upload_to_r2:
+            video_url, object_key = upload_video_to_r2(video_path)
+
+            output["video_url"] = video_url
+            output["r2_object_key"] = object_key
 
         if return_base64:
             print("=== ENCODING VIDEO TO BASE64 ===", flush=True)
