@@ -22,6 +22,15 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 pipe = None
 
 
+def print_vram(label):
+    allocated = torch.cuda.memory_allocated() / 1024**3
+    reserved = torch.cuda.memory_reserved() / 1024**3
+
+    print(f"=== VRAM {label} ===")
+    print(f"Allocated: {allocated:.2f} GB")
+    print(f"Reserved: {reserved:.2f} GB")
+
+
 def load_model():
     global pipe
 
@@ -36,14 +45,11 @@ def load_model():
         torch_dtype=torch.float16
     )
 
-    print("=== ENABLE MEMORY OPTIMIZATIONS ===")
-
-    pipe.enable_vae_slicing()
-    pipe.enable_vae_tiling()
-
     pipe.to("cuda")
 
     print("=== MODEL LOADED ===")
+
+    print_vram("AFTER MODEL LOAD")
 
     return pipe
 
@@ -98,6 +104,8 @@ def generate_video(
 
     print("=== GENERATING VIDEO ===")
 
+    print_vram("BEFORE GENERATION")
+
     with torch.inference_mode():
 
         result = pipe(
@@ -110,6 +118,8 @@ def generate_video(
     frames = result.frames[0]
 
     print("=== VIDEO GENERATED ===")
+
+    print_vram("AFTER GENERATION")
 
     return frames
 
@@ -199,16 +209,12 @@ def handler(job):
 
         start_time = time.time()
 
-        print(f"=== VRAM BEFORE === {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
         frames = generate_video(
             prompt=prompt,
             num_frames=num_frames,
             steps=steps,
             guidance_scale=guidance_scale
         )
-
-        print(f"=== VRAM AFTER === {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         video_path = save_video(
             frames,
@@ -246,6 +252,8 @@ def handler(job):
         torch.cuda.empty_cache()
 
         print("=== CUDA CACHE CLEARED ===")
+
+        print_vram("AFTER CLEANUP")
 
         print("=== JOB COMPLETE ===")
 
