@@ -22,6 +22,25 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 pipe = None
 
 
+QUALITY_PRESETS = {
+    "fast": {
+        "num_frames": 17,
+        "steps": 6,
+        "guidance_scale": 4
+    },
+    "standard": {
+        "num_frames": 33,
+        "steps": 10,
+        "guidance_scale": 5
+    },
+    "high": {
+        "num_frames": 49,
+        "steps": 16,
+        "guidance_scale": 6
+    }
+}
+
+
 def print_vram(label):
     allocated = torch.cuda.memory_allocated() / 1024**3
     reserved = torch.cuda.memory_reserved() / 1024**3
@@ -162,6 +181,39 @@ def cleanup_file(path):
         print(f"=== LOCAL VIDEO DELETED: {path} ===")
 
 
+def resolve_quality_settings(job_input):
+    quality = job_input.get(
+        "quality",
+        "standard"
+    )
+
+    preset = QUALITY_PRESETS.get(
+        quality,
+        QUALITY_PRESETS["standard"]
+    )
+
+    return {
+        "num_frames": int(
+            job_input.get(
+                "num_frames",
+                preset["num_frames"]
+            )
+        ),
+        "steps": int(
+            job_input.get(
+                "steps",
+                preset["steps"]
+            )
+        ),
+        "guidance_scale": float(
+            job_input.get(
+                "guidance_scale",
+                preset["guidance_scale"]
+            )
+        )
+    }
+
+
 def handler(job):
     try:
         print("=== JOB RECEIVED ===")
@@ -173,20 +225,16 @@ def handler(job):
             "a cinematic robot walking through snow at night"
         )
 
-        num_frames = int(
-            job_input.get("num_frames", 9)
+        quality_settings = resolve_quality_settings(
+            job_input
         )
 
-        steps = int(
-            job_input.get("steps", 5)
-        )
+        num_frames = quality_settings["num_frames"]
+        steps = quality_settings["steps"]
+        guidance_scale = quality_settings["guidance_scale"]
 
         fps = int(
             job_input.get("fps", 8)
-        )
-
-        guidance_scale = float(
-            job_input.get("guidance_scale", 5)
         )
 
         upload_to_r2 = bool(
@@ -205,7 +253,13 @@ def handler(job):
         )
 
         print("=== SETTINGS ===")
-        print(job_input)
+        print({
+            "prompt": prompt,
+            "num_frames": num_frames,
+            "steps": steps,
+            "guidance_scale": guidance_scale,
+            "fps": fps
+        })
 
         start_time = time.time()
 
@@ -222,7 +276,11 @@ def handler(job):
         )
 
         response = {
-            "ok": True
+            "ok": True,
+            "quality": job_input.get(
+                "quality",
+                "standard"
+            )
         }
 
         if upload_to_r2:
