@@ -36,6 +36,11 @@ def load_model():
         torch_dtype=torch.float16
     )
 
+    print("=== ENABLE MEMORY OPTIMIZATIONS ===")
+
+    pipe.enable_vae_slicing()
+    pipe.enable_vae_tiling()
+
     pipe.to("cuda")
 
     print("=== MODEL LOADED ===")
@@ -57,6 +62,7 @@ def get_r2_client():
 
 def upload_video_to_r2(video_path):
     bucket_name = os.environ["R2_BUCKET_NAME"]
+
     public_base = os.environ["R2_PUBLIC_BASE_URL"]
 
     object_name = f"videos/{uuid.uuid4().hex}.mp4"
@@ -92,12 +98,14 @@ def generate_video(
 
     print("=== GENERATING VIDEO ===")
 
-    result = pipe(
-        prompt=prompt,
-        num_frames=num_frames,
-        num_inference_steps=steps,
-        guidance_scale=guidance_scale
-    )
+    with torch.inference_mode():
+
+        result = pipe(
+            prompt=prompt,
+            num_frames=num_frames,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale
+        )
 
     frames = result.frames[0]
 
@@ -191,12 +199,16 @@ def handler(job):
 
         start_time = time.time()
 
+        print(f"=== VRAM BEFORE === {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
         frames = generate_video(
             prompt=prompt,
             num_frames=num_frames,
             steps=steps,
             guidance_scale=guidance_scale
         )
+
+        print(f"=== VRAM AFTER === {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         video_path = save_video(
             frames,
@@ -230,6 +242,10 @@ def handler(job):
 
         if delete_local_after_upload:
             cleanup_file(video_path)
+
+        torch.cuda.empty_cache()
+
+        print("=== CUDA CACHE CLEARED ===")
 
         print("=== JOB COMPLETE ===")
 
