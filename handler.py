@@ -28,7 +28,8 @@ MAX_FPS = 24
 VALID_QUALITIES = [
     "fast",
     "standard",
-    "high"
+    "high",
+    "ultra"
 ]
 
 QUALITY_PRESETS = {
@@ -46,6 +47,11 @@ QUALITY_PRESETS = {
         "num_frames": 49,
         "steps": 16,
         "guidance_scale": 6
+    },
+    "ultra": {
+        "num_frames": 65,
+        "steps": 20,
+        "guidance_scale": 7
     }
 }
 
@@ -60,9 +66,7 @@ def print_vram(label):
 
 
 def validate_input(job_input):
-    prompt = str(
-        job_input.get("prompt", "")
-    ).strip()
+    prompt = str(job_input.get("prompt", "")).strip()
 
     if not prompt:
         raise ValueError("Prompt is required")
@@ -72,10 +76,7 @@ def validate_input(job_input):
             f"Prompt too long. Max length is {MAX_PROMPT_LENGTH}"
         )
 
-    quality = job_input.get(
-        "quality",
-        "standard"
-    )
+    quality = job_input.get("quality", "standard")
 
     if quality not in VALID_QUALITIES:
         raise ValueError(
@@ -114,9 +115,7 @@ def validate_input(job_input):
             f"steps exceeds max limit of {MAX_STEPS}"
         )
 
-    fps = int(
-        job_input.get("fps", 8)
-    )
+    fps = int(job_input.get("fps", 8))
 
     if fps < 1:
         raise ValueError("fps must be greater than 0")
