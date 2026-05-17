@@ -3,6 +3,7 @@ import uuid
 import time
 import base64
 import traceback
+import inspect
 
 import boto3
 import torch
@@ -21,9 +22,11 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 pipe = None
 
 MAX_PROMPT_LENGTH = 500
+MAX_NEGATIVE_PROMPT_LENGTH = 500
 MAX_FRAMES = 65
 MAX_STEPS = 20
 MAX_FPS = 24
+MAX_SEED = 2**32 - 1
 
 VALID_QUALITIES = [
     "fast",
@@ -56,6 +59,18 @@ QUALITY_PRESETS = {
 }
 
 
+REALISM_SUFFIX = (
+    "ultra realistic, photorealistic, real camera footage, natural lighting, "
+    "realistic motion, cinematic realism, documentary style, 35mm lens, "
+    "realistic textures, real world physics, high detail"
+)
+
+DEFAULT_NEGATIVE_PROMPT = (
+    "cartoon, anime, illustration, painting, drawing, cgi, 3d render, "
+    "plastic skin, fake, low quality, blurry, distorted, deformed, artifacts"
+)
+
+
 def print_vram(label):
     allocated = torch.cuda.memory_allocated() / 1024**3
     reserved = torch.cuda.memory_reserved() / 1024**3
@@ -71,9 +86,18 @@ def validate_input(job_input):
     if not prompt:
         raise ValueError("Prompt is required")
 
+    prompt = f"{prompt}, {REALISM_SUFFIX}"
+
     if len(prompt) > MAX_PROMPT_LENGTH:
+        prompt = prompt[:MAX_PROMPT_LENGTH]
+
+    negative_prompt = str(
+        job_input.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
+    ).strip()
+
+    if len(negative_prompt) > MAX_NEGATIVE_PROMPT_LENGTH:
         raise ValueError(
-            f"Prompt too long. Max length is {MAX_PROMPT_LENGTH}"
+            f"negative_prompt too long. Max length is {MAX_NEGATIVE_PROMPT_LENGTH}"
         )
 
     quality = job_input.get("quality", "standard")
@@ -85,35 +109,21 @@ def validate_input(job_input):
 
     preset = QUALITY_PRESETS[quality]
 
-    num_frames = int(
-        job_input.get(
-            "num_frames",
-            preset["num_frames"]
-        )
-    )
+    num_frames = int(job_input.get("num_frames", preset["num_frames"]))
 
     if num_frames < 1:
         raise ValueError("num_frames must be greater than 0")
 
     if num_frames > MAX_FRAMES:
-        raise ValueError(
-            f"num_frames exceeds max limit of {MAX_FRAMES}"
-        )
+        raise ValueError(f"num_frames exceeds max limit of {MAX_FRAMES}")
 
-    steps = int(
-        job_input.get(
-            "steps",
-            preset["steps"]
-        )
-    )
+    steps = int(job_input.get("steps", preset["steps"]))
 
     if steps < 1:
         raise ValueError("steps must be greater than 0")
 
     if steps > MAX_STEPS:
-        raise ValueError(
-            f"steps exceeds max limit of {MAX_STEPS}"
-        )
+        raise ValueError(f"steps exceeds max limit of {MAX_STEPS}")
 
     fps = int(job_input.get("fps", 8))
 
@@ -121,24 +131,32 @@ def validate_input(job_input):
         raise ValueError("fps must be greater than 0")
 
     if fps > MAX_FPS:
-        raise ValueError(
-            f"fps exceeds max limit of {MAX_FPS}"
-        )
+        raise ValueError(f"fps exceeds max limit of {MAX_FPS}")
 
     guidance_scale = float(
-        job_input.get(
-            "guidance_scale",
-            preset["guidance_scale"]
-        )
+        job_input.get("guidance_scale", preset["guidance_scale"])
     )
+
+    seed = job_input.get("seed", None)
+
+    if seed is not None:
+        seed = int(seed)
+
+        if seed < 0:
+            raise ValueError("seed must be greater than or equal to 0")
+
+        if seed > MAX_SEED:
+            raise ValueError(f"seed exceeds max limit of {MAX_SEED}")
 
     return {
         "prompt": prompt,
+        "negative_prompt": negative_prompt,
         "quality": quality,
         "num_frames": num_frames,
         "steps": steps,
         "fps": fps,
-        "guidance_scale": guidance_scale
+        "guidance_scale": guidance_scale,
+        "seed": seed
     }
 
 
@@ -204,30 +222,48 @@ def upload_video_to_r2(video_path):
     return video_url
 
 
-def generate_video(
-    prompt,
-    num_frames,
-    steps,
-    guidance_scale
-):
+def build_pipeline_kwargs(pipe, validated):
+    signature = inspect.signature(pipe.__call__)
+    supported_params = signature.parameters.keys()
+
+    kwargs = {
+        "prompt": validated["prompt"],
+        "num_frames": validated["num_frames"],
+        "num_inference_steps": validated["steps"],
+        "guidance_scale": validated["guidance_scale"]
+    }
+
+    if "negative_prompt" in supported_params:
+        kwargs["negative_prompt"] = validated["negative_prompt"]
+
+    if validated["seed"] is not None:
+        generator = torch.Generator(device="cuda").manual_seed(
+            validated["seed"]
+        )
+
+        if "generator" in supported_params:
+            kwargs["generator"] = generator
+
+    return kwargs
+
+
+def generate_video(validated):
     pipe = load_model()
 
     print("=== GENERATING VIDEO ===")
-
     print_vram("BEFORE GENERATION")
 
+    kwargs = build_pipeline_kwargs(pipe, validated)
+
+    print("=== PIPELINE KWARGS ===")
+    print(kwargs.keys())
+
     with torch.inference_mode():
-        result = pipe(
-            prompt=prompt,
-            num_frames=num_frames,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale
-        )
+        result = pipe(**kwargs)
 
     frames = result.frames[0]
 
     print("=== VIDEO GENERATED ===")
-
     print_vram("AFTER GENERATION")
 
     return frames
@@ -277,26 +313,16 @@ def handler(job):
     try:
         print("=== JOB RECEIVED ===")
 
-        job_input = job.get(
-            "input",
-            {}
-        )
+        job_input = job.get("input", {})
 
-        validated = validate_input(
-            job_input
-        )
+        validated = validate_input(job_input)
 
         print("=== VALIDATED INPUT ===")
         print(validated)
 
         start_time = time.time()
 
-        frames = generate_video(
-            prompt=validated["prompt"],
-            num_frames=validated["num_frames"],
-            steps=validated["steps"],
-            guidance_scale=validated["guidance_scale"]
-        )
+        frames = generate_video(validated)
 
         video_path = save_video(
             frames,
@@ -310,46 +336,25 @@ def handler(job):
                 "num_frames": validated["num_frames"],
                 "steps": validated["steps"],
                 "fps": validated["fps"],
-                "guidance_scale": validated["guidance_scale"]
+                "guidance_scale": validated["guidance_scale"],
+                "seed": validated["seed"]
             }
         }
 
-        upload_to_r2 = bool(
-            job_input.get(
-                "upload_to_r2",
-                True
-            )
-        )
-
-        return_base64 = bool(
-            job_input.get(
-                "return_base64",
-                False
-            )
-        )
-
+        upload_to_r2 = bool(job_input.get("upload_to_r2", True))
+        return_base64 = bool(job_input.get("return_base64", False))
         delete_local_after_upload = bool(
-            job_input.get(
-                "delete_local_after_upload",
-                True
-            )
+            job_input.get("delete_local_after_upload", True)
         )
 
         if upload_to_r2:
-            video_url = upload_video_to_r2(
-                video_path
-            )
-
+            video_url = upload_video_to_r2(video_path)
             response["video_url"] = video_url
 
         if return_base64:
-            response["base64"] = video_to_base64(
-                video_path
-            )
+            response["base64"] = video_to_base64(video_path)
 
-        response["file_size"] = os.path.getsize(
-            video_path
-        )
+        response["file_size"] = os.path.getsize(video_path)
 
         response["generation_time"] = round(
             time.time() - start_time,
@@ -362,7 +367,6 @@ def handler(job):
         torch.cuda.empty_cache()
 
         print("=== CUDA CACHE CLEARED ===")
-
         print_vram("AFTER CLEANUP")
 
         print("=== JOB COMPLETE ===")
