@@ -6,7 +6,6 @@ import traceback
 
 import boto3
 import torch
-import imageio
 
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
@@ -78,6 +77,7 @@ def upload_video_to_r2(video_path):
     video_url = f"{public_base}/{object_name}"
 
     print("=== R2 UPLOAD COMPLETE ===")
+    print(video_url)
 
     return video_url
 
@@ -86,8 +86,7 @@ def generate_video(
     prompt,
     num_frames,
     steps,
-    guidance_scale,
-    fps
+    guidance_scale
 ):
     pipe = load_model()
 
@@ -110,7 +109,10 @@ def generate_video(
 def save_video(frames, fps):
     filename = f"{uuid.uuid4().hex}.mp4"
 
-    output_path = os.path.join(OUTPUT_DIR, filename)
+    output_path = os.path.join(
+        OUTPUT_DIR,
+        filename
+    )
 
     print(f"=== SAVING VIDEO TO {output_path} ===")
 
@@ -127,7 +129,9 @@ def video_to_base64(video_path):
     print("=== ENCODING VIDEO TO BASE64 ===")
 
     with open(video_path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("utf-8")
+        encoded = base64.b64encode(
+            f.read()
+        ).decode("utf-8")
 
     print("=== BASE64 READY ===")
 
@@ -151,15 +155,35 @@ def handler(job):
             "a cinematic robot walking through snow at night"
         )
 
-        num_frames = int(job_input.get("num_frames", 9))
-        steps = int(job_input.get("steps", 5))
-        fps = int(job_input.get("fps", 8))
-        guidance_scale = float(job_input.get("guidance_scale", 5))
+        num_frames = int(
+            job_input.get("num_frames", 9)
+        )
 
-        upload_to_r2 = bool(job_input.get("upload_to_r2", True))
-        return_base64 = bool(job_input.get("return_base64", False))
+        steps = int(
+            job_input.get("steps", 5)
+        )
+
+        fps = int(
+            job_input.get("fps", 8)
+        )
+
+        guidance_scale = float(
+            job_input.get("guidance_scale", 5)
+        )
+
+        upload_to_r2 = bool(
+            job_input.get("upload_to_r2", True)
+        )
+
+        return_base64 = bool(
+            job_input.get("return_base64", False)
+        )
+
         delete_local_after_upload = bool(
-            job_input.get("delete_local_after_upload", True)
+            job_input.get(
+                "delete_local_after_upload",
+                True
+            )
         )
 
         print("=== SETTINGS ===")
@@ -171,33 +195,38 @@ def handler(job):
             prompt=prompt,
             num_frames=num_frames,
             steps=steps,
-            guidance_scale=guidance_scale,
-            fps=fps
+            guidance_scale=guidance_scale
         )
 
-        video_path = save_video(frames, fps)
+        video_path = save_video(
+            frames,
+            fps
+        )
 
         response = {
             "ok": True
         }
 
         if upload_to_r2:
-            video_url = upload_video_to_r2(video_path)
+            video_url = upload_video_to_r2(
+                video_path
+            )
+
             response["video_url"] = video_url
 
         if return_base64:
-            response["base64"] = video_to_base64(video_path)
+            response["base64"] = video_to_base64(
+                video_path
+            )
 
-        file_size = os.path.getsize(video_path)
+        response["file_size"] = os.path.getsize(
+            video_path
+        )
 
-        response["file_size"] = file_size
-
-        generation_time = round(
+        response["generation_time"] = round(
             time.time() - start_time,
             2
         )
-
-        response["generation_time"] = generation_time
 
         if delete_local_after_upload:
             cleanup_file(video_path)
@@ -208,6 +237,7 @@ def handler(job):
 
     except Exception as e:
         print("=== ERROR ===")
+
         traceback.print_exc()
 
         return {
@@ -221,6 +251,12 @@ print(f"Python: {os.sys.version}")
 print(f"Torch: {torch.__version__}")
 print(f"CUDA: {torch.cuda.is_available()}")
 print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+print("=== PRELOADING MODEL ===")
+
+load_model()
+
+print("=== MODEL PRELOAD COMPLETE ===")
 
 runpod.serverless.start(
     {
