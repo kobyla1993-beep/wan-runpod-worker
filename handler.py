@@ -22,6 +22,18 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 pipe = None
 
 
+MAX_PROMPT_LENGTH = 500
+MAX_FRAMES = 65
+MAX_STEPS = 20
+MAX_FPS = 24
+
+VALID_QUALITIES = [
+    "fast",
+    "standard",
+    "high"
+]
+
+
 QUALITY_PRESETS = {
     "fast": {
         "num_frames": 17,
@@ -48,6 +60,96 @@ def print_vram(label):
     print(f"=== VRAM {label} ===")
     print(f"Allocated: {allocated:.2f} GB")
     print(f"Reserved: {reserved:.2f} GB")
+
+
+def validate_input(job_input):
+    prompt = str(
+        job_input.get("prompt", "")
+    ).strip()
+
+    if not prompt:
+        raise ValueError(
+            "Prompt is required"
+        )
+
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        raise ValueError(
+            f"Prompt too long. Max length is {MAX_PROMPT_LENGTH}"
+        )
+
+    quality = job_input.get(
+        "quality",
+        "standard"
+    )
+
+    if quality not in VALID_QUALITIES:
+        raise ValueError(
+            f"Invalid quality preset. Valid presets: {VALID_QUALITIES}"
+        )
+
+    num_frames = int(
+        job_input.get(
+            "num_frames",
+            QUALITY_PRESETS[quality]["num_frames"]
+        )
+    )
+
+    if num_frames < 1:
+        raise ValueError(
+            "num_frames must be greater than 0"
+        )
+
+    if num_frames > MAX_FRAMES:
+        raise ValueError(
+            f"num_frames exceeds max limit of {MAX_FRAMES}"
+        )
+
+    steps = int(
+        job_input.get(
+            "steps",
+            QUALITY_PRESETS[quality]["steps"]
+        )
+    )
+
+    if steps < 1:
+        raise ValueError(
+            "steps must be greater than 0"
+        )
+
+    if steps > MAX_STEPS:
+        raise ValueError(
+            f"steps exceeds max limit of {MAX_STEPS}"
+        )
+
+    fps = int(
+        job_input.get("fps", 8)
+    )
+
+    if fps < 1:
+        raise ValueError(
+            "fps must be greater than 0"
+        )
+
+    if fps > MAX_FPS:
+        raise ValueError(
+            f"fps exceeds max limit of {MAX_FPS}"
+        )
+
+    guidance_scale = float(
+        job_input.get(
+            "guidance_scale",
+            QUALITY_PRESETS[quality]["guidance_scale"]
+        )
+    )
+
+    return {
+        "prompt": prompt,
+        "quality": quality,
+        "num_frames": num_frames,
+        "steps": steps,
+        "fps": fps,
+        "guidance_scale": guidance_scale
+    }
 
 
 def load_model():
@@ -181,68 +283,50 @@ def cleanup_file(path):
         print(f"=== LOCAL VIDEO DELETED: {path} ===")
 
 
-def resolve_quality_settings(job_input):
-    quality = job_input.get(
-        "quality",
-        "standard"
-    )
-
-    preset = QUALITY_PRESETS.get(
-        quality,
-        QUALITY_PRESETS["standard"]
-    )
-
-    return {
-        "num_frames": int(
-            job_input.get(
-                "num_frames",
-                preset["num_frames"]
-            )
-        ),
-        "steps": int(
-            job_input.get(
-                "steps",
-                preset["steps"]
-            )
-        ),
-        "guidance_scale": float(
-            job_input.get(
-                "guidance_scale",
-                preset["guidance_scale"]
-            )
-        )
-    }
-
-
 def handler(job):
     try:
         print("=== JOB RECEIVED ===")
 
         job_input = job["input"]
 
-        prompt = job_input.get(
-            "prompt",
-            "a cinematic robot walking through snow at night"
-        )
-
-        quality_settings = resolve_quality_settings(
+        validated = validate_input(
             job_input
         )
 
-        num_frames = quality_settings["num_frames"]
-        steps = quality_settings["steps"]
-        guidance_scale = quality_settings["guidance_scale"]
+        print("=== VALIDATED INPUT ===")
+        print(validated)
 
-        fps = int(
-            job_input.get("fps", 8)
+        start_time = time.time()
+
+        frames = generate_video(
+            prompt=validated["prompt"],
+            num_frames=validated["num_frames"],
+            steps=validated["steps"],
+            guidance_scale=validated["guidance_scale"]
         )
 
+        video_path = save_video(
+            frames,
+            validated["fps"]
+        )
+
+        response = {
+            "ok": True,
+            "quality": validated["quality"]
+        }
+
         upload_to_r2 = bool(
-            job_input.get("upload_to_r2", True)
+            job_input.get(
+                "upload_to_r2",
+                True
+            )
         )
 
         return_base64 = bool(
-            job_input.get("return_base64", False)
+            job_input.get(
+                "return_base64",
+                False
+            )
         )
 
         delete_local_after_upload = bool(
@@ -251,37 +335,6 @@ def handler(job):
                 True
             )
         )
-
-        print("=== SETTINGS ===")
-        print({
-            "prompt": prompt,
-            "num_frames": num_frames,
-            "steps": steps,
-            "guidance_scale": guidance_scale,
-            "fps": fps
-        })
-
-        start_time = time.time()
-
-        frames = generate_video(
-            prompt=prompt,
-            num_frames=num_frames,
-            steps=steps,
-            guidance_scale=guidance_scale
-        )
-
-        video_path = save_video(
-            frames,
-            fps
-        )
-
-        response = {
-            "ok": True,
-            "quality": job_input.get(
-                "quality",
-                "standard"
-            )
-        }
 
         if upload_to_r2:
             video_url = upload_video_to_r2(
