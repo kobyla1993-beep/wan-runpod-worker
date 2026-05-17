@@ -14,13 +14,11 @@ import runpod
 
 
 MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-
 OUTPUT_DIR = "/tmp/wan_outputs"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 pipe = None
-
 
 MAX_PROMPT_LENGTH = 500
 MAX_FRAMES = 65
@@ -32,7 +30,6 @@ VALID_QUALITIES = [
     "standard",
     "high"
 ]
-
 
 QUALITY_PRESETS = {
     "fast": {
@@ -68,9 +65,7 @@ def validate_input(job_input):
     ).strip()
 
     if not prompt:
-        raise ValueError(
-            "Prompt is required"
-        )
+        raise ValueError("Prompt is required")
 
     if len(prompt) > MAX_PROMPT_LENGTH:
         raise ValueError(
@@ -87,17 +82,17 @@ def validate_input(job_input):
             f"Invalid quality preset. Valid presets: {VALID_QUALITIES}"
         )
 
+    preset = QUALITY_PRESETS[quality]
+
     num_frames = int(
         job_input.get(
             "num_frames",
-            QUALITY_PRESETS[quality]["num_frames"]
+            preset["num_frames"]
         )
     )
 
     if num_frames < 1:
-        raise ValueError(
-            "num_frames must be greater than 0"
-        )
+        raise ValueError("num_frames must be greater than 0")
 
     if num_frames > MAX_FRAMES:
         raise ValueError(
@@ -107,14 +102,12 @@ def validate_input(job_input):
     steps = int(
         job_input.get(
             "steps",
-            QUALITY_PRESETS[quality]["steps"]
+            preset["steps"]
         )
     )
 
     if steps < 1:
-        raise ValueError(
-            "steps must be greater than 0"
-        )
+        raise ValueError("steps must be greater than 0")
 
     if steps > MAX_STEPS:
         raise ValueError(
@@ -126,9 +119,7 @@ def validate_input(job_input):
     )
 
     if fps < 1:
-        raise ValueError(
-            "fps must be greater than 0"
-        )
+        raise ValueError("fps must be greater than 0")
 
     if fps > MAX_FPS:
         raise ValueError(
@@ -138,7 +129,7 @@ def validate_input(job_input):
     guidance_scale = float(
         job_input.get(
             "guidance_scale",
-            QUALITY_PRESETS[quality]["guidance_scale"]
+            preset["guidance_scale"]
         )
     )
 
@@ -189,7 +180,6 @@ def get_r2_client():
 
 def upload_video_to_r2(video_path):
     bucket_name = os.environ["R2_BUCKET_NAME"]
-
     public_base = os.environ["R2_PUBLIC_BASE_URL"]
 
     object_name = f"videos/{uuid.uuid4().hex}.mp4"
@@ -228,7 +218,6 @@ def generate_video(
     print_vram("BEFORE GENERATION")
 
     with torch.inference_mode():
-
         result = pipe(
             prompt=prompt,
             num_frames=num_frames,
@@ -284,10 +273,15 @@ def cleanup_file(path):
 
 
 def handler(job):
+    video_path = None
+
     try:
         print("=== JOB RECEIVED ===")
 
-        job_input = job["input"]
+        job_input = job.get(
+            "input",
+            {}
+        )
 
         validated = validate_input(
             job_input
@@ -312,7 +306,13 @@ def handler(job):
 
         response = {
             "ok": True,
-            "quality": validated["quality"]
+            "quality": validated["quality"],
+            "settings": {
+                "num_frames": validated["num_frames"],
+                "steps": validated["steps"],
+                "fps": validated["fps"],
+                "guidance_scale": validated["guidance_scale"]
+            }
         }
 
         upload_to_r2 = bool(
@@ -371,13 +371,17 @@ def handler(job):
         return response
 
     except Exception as e:
-        print("=== ERROR ===")
-
+        print("=== VALIDATION OR RUNTIME ERROR ===")
         traceback.print_exc()
+
+        if video_path and os.path.exists(video_path):
+            cleanup_file(video_path)
+
+        torch.cuda.empty_cache()
 
         return {
             "ok": False,
-            "error": str(e)
+            "error_message": str(e)
         }
 
 
